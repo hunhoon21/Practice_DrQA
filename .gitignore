@@ -1,3 +1,4 @@
 .idea
-SQuAD/dev-v1.1.json SQuAD/train-v1.1.json
+SQuAD/dev-v1.1.json
+SQuAD/train-v1.1.json
 glove/glove.840B.300d.txt
