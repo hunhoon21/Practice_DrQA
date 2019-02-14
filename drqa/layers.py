@@ -41,22 +41,21 @@ class StackedBRNN(nn.Module):
         # 패딩이 필요 없었던 경우
         if x_mask.data.sum() == 0:
             return self._forward_unpadded(x, x_mask)
-        # 패딩을 적용한 경우
+        # 패딩을 적용, Validation 경우
         if self.padding or not self.training:
             return self._forward_padded(x, x_mask)
-
+        #그 외
         return self._forward_unpadded(x, x_mask)
 
     def _forward_unpadded(self, x, x_mask):
         """Faster encoding that ignores any padding."""
-        # x예시 : (32, 292, 300)
+        # x example : (32, 292, 300)
+        # x_mask : (32, 292) => [0, 0 , 0, ..., 1, 1]
+        x= x.transpose(0, 1) # => (292, 32, 300)
 
-        # x => (292, 32, 300)
-        x= x.transpose(0, 1)
-
-        #
         outputs = [x]
-        #
+
+        # RNN layer 통과
         for i in range(self.num_layers):
             rnn_input = outputs[-1]
 
@@ -75,10 +74,10 @@ class StackedBRNN(nn.Module):
         else:
             output = outputs[-1]
 
-        #
+        # 기존 모양으로
         output = output.transpose(0,1)
 
-        #
+        # dropout
         if self.dropout_output and self.dropout_rate > 0:
             output = F.dropout(output, p = self.dropout_rate,
                                training = self.training)
@@ -88,10 +87,10 @@ class StackedBRNN(nn.Module):
     def forward_padded(self, x, x_mask):
         """Slower (significantly), but more precise,
         encoding that handles padding."""
-        #
-        lengths = x_mask.data.eq(0).long().sum(1).sqeeze()
-        _, idx_sort = torch.sort(lengths, dim=0, descending=True)
-        _, idx_unsort = torch.sort(idx_sort, dim=0)
+        # example x = > (32, 31,616)
+        lengths = x_mask.data.eq(0).long().sum(1).sqeeze() # (32, )
+        _, idx_sort = torch.sort(lengths, dim=0, descending=True) # 큰것부터, 같은값 끼리는 random index
+        _, idx_unsort = torch.sort(idx_sort, dim=0) # 위에서 sort한 순서를 idx로 기억
 
         lengths = list(lengths[idx_sort])
         # idx_sort = Variable(idx_sort)
@@ -99,44 +98,48 @@ class StackedBRNN(nn.Module):
         idx_sort = torch.tensor(idx_sort)
         idx_unsort = torch.tensor(idx_unsort)
 
-        #
+        # 길이가 큰 것부터 x 재배치 => (32, 31, 616)
         x = x.index_select(0, idx_sort)
 
-        #
-        x = x.transpose(0, 1)
 
-        #
+        x = x.transpose(0, 1) # => (31, 32, 616)
+
+        # rnn_ input = [data = (956, 616), batch_sizes = (31, )]
+        # 956 means 1_token_1, 1_token_2 , ... 1_token_31, 2_token_1, ..., 32_token_26
+        # sum(batch_sizes) = 956
         rnn_input = nn.utils.rnn.pack_padded_sequence(x, lengths)
 
-        #
+
         outputs = [rnn_input]
         for i in range(self.num_layers):
             rnn_input = outputs[-1]
 
-            #
+            # dropout
             if self.dropout_rate > 0:
-                dropout_input = F.dropout(rnn_input.data,
+                dropout_input = F.dropout(rnn_input.data, # => (956, 616)
                                           p = self.dropout_rate,
                                           training=self.training)
+                # 길이 정보 다시 추가, rnn_ input = [data = (956, 616), batch_sizes = (31, )]
                 rnn_input = nn.utils.rnn.PackedSequence(dropout_input,
                                                         rnn_input.batch_sizes)
             outputs.append(self.rnns[i](rnn_input)[0])
 
-        #
-        for i, o in enumerate(outputs[1:], 1):
+        # 기존 모양으로 돌려주기
+        for i, o in enumerate(outputs[1:], 1): # i from 1
+            #o = [data = (956, 256), batch_sizes = (31, )] => (31, 32, 256)
             outputs[i] = nn.utils.rnn.pad_packed_sequence(o)[0]
 
-        #
+        # 3layers 합치기
         if self.concat_layers:
             output = torch.cat(outputs[1:], 2)
         else:
             output = outputs[-1]
 
-        #
+        # 기존 x batch 순서 찾아가기
         output = output.transpose(0, 1)
         output = output.index_select(0, idx_unsort)
 
-        #
+        # padding 사이즈 안 맞는 경우 맞춰주기
         if output.size(1) != x_mask.size(1):
             padding = torch.zeros(output.size(0),
                                   x_mask.size(1) - output.size(1),
@@ -144,7 +147,7 @@ class StackedBRNN(nn.Module):
             #output = torch.cat([output, Variable(padding)], 1)
             output = torch.cat([output, torch.tensor(padding)], 1)
 
-        #
+        # dropout
         if self.dropout_output and self.dropout_rate > 0:
             output = F.dropout(output,
                                p = self.dropout_rate,
